@@ -67,10 +67,10 @@ public class OpennlpTokenizeService {
                 .help("Sentence model path");
         parser.addArgument("--token_model").setDefault("data/en-token.bin")
                 .help("Tokenize model path");
-        parser.addArgument("--input").setDefault("")
-                .help("Input file path");
-        parser.addArgument("--output").setDefault("")
-                .help("Output file path");
+        // parser.addArgument("--input").setDefault("")
+        //         .help("Input file path");
+        // parser.addArgument("--output").setDefault("")
+        //         .help("Output file path");
         Namespace opts = null;
         opts = parser.parseArgs(args);
         /* Set variables */
