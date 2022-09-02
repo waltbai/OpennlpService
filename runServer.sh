@@ -1,0 +1,2 @@
+java -DWNSEARCHDIR="D:\WordNet-3.0\dict" -D"user.language"=en -jar OpennlpCorefService-jar-with-dependencies.jar --parse_model ..\data\en-parser-chunking.bin --coref_model ..\data
+java -jar OpennlpTokenizeService-jar-with-dependencies.jar --sent_model ..\data\en-sent.bin --token_model ..\data\en-token.bin
