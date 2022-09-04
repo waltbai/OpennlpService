@@ -77,7 +77,7 @@ public class OpennlpCorefService
         /* Load coreference resolution model */
         chunkParser = loadParser(chunkParseModelPath);
         corefLinker = loadLinker(corefModelPath);
-//        corefFile("../test.0001");
+//        corefFile("../test.0003");
         /* Start http server */
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/coref", new corefHandler());
@@ -202,21 +202,24 @@ public class OpennlpCorefService
         List<Mention> allMentions = new ArrayList<Mention>();
         for (int i = 0; i < parsedSentences.length; i++) {
             DefaultParse resultWrapper = new DefaultParse(parsedSentences[i], i);
-            Mention[] mentions = corefLinker.getMentionFinder().getMentions(resultWrapper);
-            for (Mention mention : mentions) {
-                /* Created new mention is unable to get head,
-                 *  which will cause problem in linker. */
-                if (mention.getParse() == null) {
-                    Parse snp = new Parse(parsedSentences[i].getText(),
-                            mention.getSpan(), "NML", 1.0, 0);
-                    parsedSentences[i].insert(snp);
-                    mention.setParse(new DefaultParse(snp, i));
-                    if (!headedOnly) {
+            try {
+                Mention[] mentions = corefLinker.getMentionFinder().getMentions(resultWrapper);
+                for (Mention mention : mentions) {
+                    /* Created new mention is unable to get head,
+                     *  which will cause problem in linker. */
+                    if (mention.getParse() == null) {
+                        Parse snp = new Parse(parsedSentences[i].getText(),
+                                mention.getSpan(), "NML", 1.0, 0);
+                        parsedSentences[i].insert(snp);
+                        mention.setParse(new DefaultParse(snp, i));
+                        if (!headedOnly) {
+                            allMentions.add(mention);
+                        }
+                    } else {
                         allMentions.add(mention);
                     }
-                } else {
-                    allMentions.add(mention);
                 }
+            } catch (IllegalArgumentException ignored) {
             }
         }
         return allMentions;
