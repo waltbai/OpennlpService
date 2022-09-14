@@ -1,5 +1,6 @@
 package ict.ndst.okn;
 
+
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -21,9 +22,15 @@ import opennlp.tools.parser.Parser;
 import opennlp.tools.parser.ParserFactory;
 import opennlp.tools.parser.ParserModel;
 
-import java.io.*;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 
 
 class SimpleMention {
@@ -45,17 +52,118 @@ class SimpleMention {
 }
 
 
-/**
- * Opennlp Service
- */
-public class OpennlpCorefService
-{
-    private static Parser chunkParser = null;
-    private static Linker corefLinker = null;
-    private static int minLength = 2;
+public class OpennlpCorefService {
+    Parser chunkParser;
+    Linker corefLinker;
+    int minLength;
+
+    public OpennlpCorefService(String chunkParseModelPath, String corefModelPath,
+                               int minLength) throws IOException {
+        /* Load chunk parse model */
+        InputStream chunkParseModelFile = new FileInputStream(chunkParseModelPath);
+        ParserModel parserModel = new ParserModel(chunkParseModelFile);
+        chunkParser = ParserFactory.create(parserModel);
+        /* Load coref link model */
+        corefLinker = new TreebankLinker(corefModelPath, LinkerMode.TEST);
+        this.minLength = minLength;
+    }
+
+    public DiscourseEntity[] corefenceResolutionIntolerant(String content) {
+        try {
+            /* Split sentences */
+            String[] sentences = content.split("\n");
+            int numSentences = sentences.length;
+            /* Chunk parse each sentence */
+            Parse[] parsedSentences = new Parse[numSentences];
+            for (int i = 0; i < numSentences; i++) {
+                Parse result = ParserTool.parseLine(sentences[i], chunkParser, 1)[0];
+                parsedSentences[i] = result;
+            }
+            /* Get mentions */
+            List<Mention> allMentions = new ArrayList<Mention>();
+            for (int i = 0; i < numSentences; i++) {
+                DefaultParse resultWrapper = new DefaultParse(parsedSentences[i], i);
+                Mention[] mentions = corefLinker.getMentionFinder().getMentions(resultWrapper);
+                for (Mention mention : mentions) {
+                    if (mention.getParse() == null) {
+                        Parse snp = new Parse(parsedSentences[i].getText(),
+                                mention.getSpan(), "NML", 1.0, 0);
+                        parsedSentences[i].insert(snp);
+                        mention.setParse(new DefaultParse(snp, i));
+                    }
+                }
+                allMentions.addAll(Arrays.asList(mentions));
+            }
+            Mention[] mentionArray = allMentions.toArray(new Mention[0]);
+            return corefLinker.getEntities(mentionArray);
+        } catch (Exception e) {
+//            e.printStackTrace();
+            return new DiscourseEntity[0];
+        }
+    }
+
+    /* Convert entities to response string */
+    private String responseContent(DiscourseEntity[] entities) {
+        StringBuilder sb = new StringBuilder();
+        for (DiscourseEntity entity: entities) {
+            int entityId = entity.getId();
+            ArrayList<SimpleMention> tempMentions = new ArrayList<SimpleMention>();
+            for (Iterator<MentionContext> it = entity.getMentions(); it.hasNext(); ) {
+                MentionContext mention = it.next();
+                int sentenceId = mention.getParse().getSentenceNumber();
+                int start = mention.getSpan().getStart();
+                int end = mention.getSpan().getEnd();
+                int headStart = mention.getHeadSpan().getStart();
+                int headEnd = mention.getHeadSpan().getEnd();
+                tempMentions.add(new SimpleMention(
+                        entityId, sentenceId, start, end, headStart, headEnd)
+                );
+            }
+            /* Filter short coref chains */
+            if (tempMentions.size() >= minLength) {
+                for (SimpleMention mention: tempMentions) {
+                    sb.append(mention.entityId).append(" ")
+                            .append(mention.sentenceNumber).append(" ")
+                            .append(mention.spanStart).append(" ")
+                            .append(mention.spanEnd).append(" ")
+                            .append(mention.headSpanStart).append(" ")
+                            .append(mention.headSpanEnd).append(" ");
+                }
+                sb.append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    public void runService(int port) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+        server.createContext("/coref", new HttpHandler() {
+            @Override
+            public void handle(HttpExchange httpExchange) throws IOException {
+                if (httpExchange.getRequestMethod().equalsIgnoreCase("POST")) {
+                    Headers requestHeaders = httpExchange.getRequestHeaders();
+                    int contentLength = Integer.parseInt(requestHeaders.getFirst("Content-length"));
+                    InputStream is = httpExchange.getRequestBody();
+                    byte[] data = new byte[contentLength];
+                    int length = is.read(data, 0, contentLength);
+                    String content = new String(data);
+                    /* Coreference Resolution */
+                    DiscourseEntity[] entities = corefenceResolutionIntolerant(content);
+                    byte[] responseContent = responseContent(entities).getBytes();
+                    httpExchange.sendResponseHeaders(200, responseContent.length);
+                    OutputStream os = httpExchange.getResponseBody();
+                    os.write(responseContent);
+                    os.flush();
+                    os.close();
+                }
+            }
+        });
+        System.out.println("Server started.");
+        server.start();
+    }
 
     public static void main( String[] args ) throws ArgumentParserException, IOException {
-        /* Parse arguments */
+        /* Parse command line arguments */
         ArgumentParser parser = ArgumentParsers.newFor("opennlp-coref-service").build()
                 .defaultHelp(true)
                 .description("start up a local opennlp coref service.");
@@ -67,208 +175,13 @@ public class OpennlpCorefService
                 .help("coreference resolution model path");
         parser.addArgument("--min_length").type(Integer.class).setDefault(2)
                 .help("Minimum length of the coreference chain.");
-        Namespace opts = null;
-        opts = parser.parseArgs(args);
-        /* Set variables */
+        Namespace opts = parser.parseArgs(args);
         int port = opts.getInt("port");
         String chunkParseModelPath = opts.getString("parse_model");
         String corefModelPath = opts.getString("coref_model");
-        minLength = opts.getInt("min_length");
-        /* Load coreference resolution model */
-        chunkParser = loadParser(chunkParseModelPath);
-        corefLinker = loadLinker(corefModelPath);
-//        corefFile("../test.0003");
-        /* Start http server */
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        server.createContext("/coref", new corefHandler());
-//        server.createContext("/parse", new chunkParseHandler());
-        System.out.println("Server started.");
-        server.start();
-    }
-
-    /* Coref Link a file, just for testing */
-    static void corefFile(String fileName) throws IOException {
-        BufferedReader br = new BufferedReader(new FileReader(fileName));
-        StringBuilder sb = new StringBuilder();
-        String line;
-        while ((line = br.readLine()) != null) {
-            sb.append(line);
-            sb.append("\n");
-        }
-        String content = sb.toString();
-        List<ArrayList<SimpleMention>> entities = coreferenceResolution(content);
-        sb = new StringBuilder();
-        for (ArrayList<SimpleMention> mentions : entities) {
-            for (SimpleMention mention: mentions) {
-                sb.append(mention.entityId).append(" ")
-                        .append(mention.sentenceNumber).append(" ")
-                        .append(mention.spanStart).append(" ")
-                        .append(mention.spanEnd).append(" ")
-                        .append(mention.headSpanStart).append(" ")
-                        .append(mention.headSpanEnd).append(" ");
-            }
-            sb.append("\n");
-        }
-        System.out.println(sb.toString());
-    }
-
-    /* Handle coreference resolution POST data */
-    static class corefHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            /* Only receive POST data.*/
-            if (exchange.getRequestMethod().equalsIgnoreCase("POST")) {
-                /* Parse request */
-                Headers requestHeaders = exchange.getRequestHeaders();
-                int contentLength = Integer.parseInt(requestHeaders.getFirst("Content-length"));
-                InputStream is = exchange.getRequestBody();
-                byte[] data = new byte[contentLength];
-                int length = is.read(data, 0, contentLength);
-                String content = new String(data);
-                /* Process request */
-                List<ArrayList<SimpleMention>> entities = coreferenceResolution(content);
-                StringBuilder sb = new StringBuilder();
-                for (ArrayList<SimpleMention> mentions : entities) {
-                    for (SimpleMention mention: mentions) {
-                        sb.append(mention.entityId).append(" ")
-                                .append(mention.sentenceNumber).append(" ")
-                                .append(mention.spanStart).append(" ")
-                                .append(mention.spanEnd).append(" ")
-                                .append(mention.headSpanStart).append(" ")
-                                .append(mention.headSpanEnd).append(" ");
-                    }
-                    sb.append("\n");
-                }
-                /* Send response */
-                byte [] responseContent = sb.toString().getBytes();
-                exchange.sendResponseHeaders(200, responseContent.length);
-                OutputStream os = exchange.getResponseBody();
-                os.write(responseContent);
-                os.flush();
-                os.close();
-            }
-        }
-    }
-
-    static class chunkParseHandler implements HttpHandler {
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            /* Only receive POST data.*/
-            if (exchange.getRequestMethod().equalsIgnoreCase("POST")) {
-                /* Parse request */
-                Headers requestHeaders = exchange.getRequestHeaders();
-                int contentLength = Integer.parseInt(requestHeaders.getFirst("Content-length"));
-                InputStream is = exchange.getRequestBody();
-                byte[] data = new byte[contentLength];
-                int length = is.read(data, 0, contentLength);
-                String content = new String(data);
-                /* Process request */
-                String[] sentences = content.split("\n");
-                int numSentences = sentences.length;
-                StringBuffer resultBuffer = new StringBuffer();
-                for (String sentence : sentences) {
-                    Parse result = ParserTool.parseLine(sentence, chunkParser, 1)[0];
-                    result.show(resultBuffer);
-                    resultBuffer.append("\n");
-                }
-                /* Send response */
-                byte [] responseContent = resultBuffer.toString().getBytes();
-                exchange.sendResponseHeaders(200, responseContent.length);
-                OutputStream os = exchange.getResponseBody();
-                os.write(responseContent);
-                os.flush();
-                os.close();
-            }
-        }
-    }
-
-    /* Load parser */
-    private static Parser loadParser(String modelPath) throws IOException {
-//        System.out.println("Loading chunkparse model ...");
-        InputStream is = new FileInputStream(modelPath);
-        ParserModel model = new ParserModel(is);
-//        System.out.println("Chunk parser loaded.");
-        return ParserFactory.create(model);
-    }
-
-    /* Load linker */
-    private static Linker loadLinker(String modelDir) throws IOException {
-//        System.out.println("Loading coref model ...");
-        return new TreebankLinker(modelDir, LinkerMode.TEST);
-    }
-
-
-    private static List<Mention> findMentions(Parse[] parsedSentences, boolean headedOnly) {
-        List<Mention> allMentions = new ArrayList<Mention>();
-        for (int i = 0; i < parsedSentences.length; i++) {
-            DefaultParse resultWrapper = new DefaultParse(parsedSentences[i], i);
-            try {
-                Mention[] mentions = corefLinker.getMentionFinder().getMentions(resultWrapper);
-                for (Mention mention : mentions) {
-                    /* Created new mention is unable to get head,
-                     *  which will cause problem in linker. */
-                    if (mention.getParse() == null) {
-                        Parse snp = new Parse(parsedSentences[i].getText(),
-                                mention.getSpan(), "NML", 1.0, 0);
-                        parsedSentences[i].insert(snp);
-                        mention.setParse(new DefaultParse(snp, i));
-                        if (!headedOnly) {
-                            allMentions.add(mention);
-                        }
-                    } else {
-                        allMentions.add(mention);
-                    }
-                }
-            } catch (IllegalArgumentException ignored) {
-            }
-        }
-        return allMentions;
-    }
-
-    /* Coreference resolution*/
-    private static List<ArrayList<SimpleMention>> coreferenceResolution(String content) {
-        String[] sentences = content.split("\n");
-        int numSentences = sentences.length;
-        /* Chunk parse each sentence */
-        Parse[] parsedSentences = new Parse[numSentences];
-        for (int i = 0; i < numSentences; i++){
-            Parse result = ParserTool.parseLine(sentences[i], chunkParser, 1)[0];
-            parsedSentences[i] = result;
-        }
-        Mention[] mentionList;
-        DiscourseEntity[] entities;
-        try {
-            /* Find mentions */
-            List<Mention> allMentions = findMentions(parsedSentences, false);
-            /* Coreference resolution */
-            mentionList = allMentions.toArray(new Mention[0]);
-            entities = corefLinker.getEntities(mentionList);
-        } catch (ArrayIndexOutOfBoundsException e) {
-            List<Mention> allMentions = findMentions(parsedSentences, true);
-            mentionList = allMentions.toArray(new Mention[0]);
-            entities = corefLinker.getEntities(mentionList);
-        }
-        /* Get result clusters */
-        List<ArrayList<SimpleMention>> results = new ArrayList<ArrayList<SimpleMention>>();
-        for (DiscourseEntity entity: entities) {
-            int entityId = entity.getId();
-            List<MentionContext> temp = new ArrayList<MentionContext>();
-            for (Iterator<MentionContext> it = entity.getMentions(); it.hasNext(); ) {
-                MentionContext mentionContext = it.next();
-                temp.add(mentionContext);
-            }
-            ArrayList<SimpleMention> tempMentions = new ArrayList<SimpleMention>();
-            if (temp.size() >= minLength) {
-                for (MentionContext mentionContext: temp) {
-                    tempMentions.add(new SimpleMention(
-                            entityId, mentionContext.getParse().getSentenceNumber(),
-                            mentionContext.getSpan().getStart(), mentionContext.getSpan().getEnd(),
-                            mentionContext.getHeadSpan().getStart(),
-                            mentionContext.getHeadSpan().getEnd()));
-                }
-                results.add(tempMentions);
-            }
-        }
-        return results;
+        int minLength = opts.getInt("min_length");
+        /* Initialize service object */
+        OpennlpCorefService service = new OpennlpCorefService(chunkParseModelPath, corefModelPath, minLength);
+        service.runService(port);
     }
 }
