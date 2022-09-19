@@ -22,10 +22,7 @@ import opennlp.tools.parser.Parser;
 import opennlp.tools.parser.ParserFactory;
 import opennlp.tools.parser.ParserModel;
 
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -102,37 +99,84 @@ public class OpennlpCorefService {
         }
     }
 
+    private int corefenceResolution(String inFilePath, String outFilePath) throws IOException {
+        /* Read file */
+        BufferedReader br = new BufferedReader(new FileReader(inFilePath));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) {
+            sb.append(line);
+            sb.append("\n");
+        }
+        String content = sb.toString();
+        /* Coreference Resolution */
+        DiscourseEntity[] entities = corefenceResolutionIntolerant(content);
+        /* Convert result */
+        BufferedWriter outFile = new BufferedWriter(new FileWriter(outFilePath));
+        for (DiscourseEntity entity: entities) {
+            int entityId = entity.getId();
+            int count = 0;
+            for (Iterator<MentionContext> it = entity.getMentions(); it.hasNext(); ) {
+                MentionContext mention = it.next();
+                count++;
+            }
+            /* Filter short coref chains */
+            if (count >= minLength) {
+                for (Iterator<MentionContext> it = entity.getMentions(); it.hasNext(); ) {
+                    MentionContext mention = it.next();
+                    outFile.write(entityId + " ");
+                    outFile.write(mention.getParse().getSentenceNumber() + " ");
+                    outFile.write(mention.getSpan().getStart() + " ");
+                    outFile.write(mention.getSpan().getEnd() + " ");
+                    outFile.write(mention.getHeadSpan().getStart() + " ");
+                    outFile.write(mention.getHeadSpan().getEnd() + " ");
+                }
+                outFile.write("\n");
+            }
+        }
+        outFile.close();
+        return 1;
+    }
+
     /* Convert entities to response string */
     private String responseContent(DiscourseEntity[] entities) {
         StringBuilder sb = new StringBuilder();
         for (DiscourseEntity entity: entities) {
             int entityId = entity.getId();
-            ArrayList<SimpleMention> tempMentions = new ArrayList<SimpleMention>();
+            int count = 0;
             for (Iterator<MentionContext> it = entity.getMentions(); it.hasNext(); ) {
                 MentionContext mention = it.next();
-                int sentenceId = mention.getParse().getSentenceNumber();
-                int start = mention.getSpan().getStart();
-                int end = mention.getSpan().getEnd();
-                int headStart = mention.getHeadSpan().getStart();
-                int headEnd = mention.getHeadSpan().getEnd();
-                tempMentions.add(new SimpleMention(
-                        entityId, sentenceId, start, end, headStart, headEnd)
-                );
+                count++;
             }
             /* Filter short coref chains */
-            if (tempMentions.size() >= minLength) {
-                for (SimpleMention mention: tempMentions) {
-                    sb.append(mention.entityId).append(" ")
-                            .append(mention.sentenceNumber).append(" ")
-                            .append(mention.spanStart).append(" ")
-                            .append(mention.spanEnd).append(" ")
-                            .append(mention.headSpanStart).append(" ")
-                            .append(mention.headSpanEnd).append(" ");
+            if (count >= minLength) {
+                for (Iterator<MentionContext> it = entity.getMentions(); it.hasNext(); ) {
+                    MentionContext mention = it.next();
+                    sb.append(entityId).append(" ")
+                            .append(mention.getParse().getSentenceNumber()).append(" ")
+                            .append(mention.getSpan().getStart()).append(" ")
+                            .append(mention.getSpan().getEnd()).append(" ")
+                            .append(mention.getHeadSpan().getStart()).append(" ")
+                            .append(mention.getHeadSpan().getEnd()).append(" ");
                 }
                 sb.append("\n");
             }
         }
         return sb.toString();
+    }
+
+    public void printResult(String filePath) throws IOException {
+        BufferedReader br = new BufferedReader(new FileReader(filePath));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) {
+            sb.append(line);
+            sb.append("\n");
+        }
+        String content = sb.toString();
+        DiscourseEntity[] entities = corefenceResolutionIntolerant(content);
+        String result = responseContent(entities);
+        System.out.println(result);
     }
 
     public void runService(int port) throws IOException {
@@ -148,8 +192,13 @@ public class OpennlpCorefService {
                     int length = is.read(data, 0, contentLength);
                     String content = new String(data);
                     /* Coreference Resolution */
-                    DiscourseEntity[] entities = corefenceResolutionIntolerant(content);
-                    byte[] responseContent = responseContent(entities).getBytes();
+                    String[] contents = content.split("\n");
+                    String inFilePath = contents[0];
+                    String outFilePath = contents[1];
+//                    DiscourseEntity[] entities = corefenceResolutionIntolerant(content);
+                    int result = corefenceResolution(inFilePath, outFilePath);
+//                    byte[] responseContent = responseContent(entities).getBytes();
+                    byte[] responseContent = Integer.toString(result).getBytes();
                     httpExchange.sendResponseHeaders(200, responseContent.length);
                     OutputStream os = httpExchange.getResponseBody();
                     os.write(responseContent);
@@ -183,5 +232,6 @@ public class OpennlpCorefService {
         /* Initialize service object */
         OpennlpCorefService service = new OpennlpCorefService(chunkParseModelPath, corefModelPath, minLength);
         service.runService(port);
+//        service.printResult("../sample/NYT_ENG_19940701.0052");
     }
 }
